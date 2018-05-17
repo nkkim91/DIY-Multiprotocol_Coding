@@ -144,6 +144,7 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 	}
 	printf("\n");
 
+#if 0
 	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {
 
 		for( j = 0; j < (sizeof(uint8_t) * 8); j++) {
@@ -157,15 +158,16 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 		printf("  ");
 	}
 	printf("\n");
+#endif
 }
 
 void Fill_TxStream_Buf(union TxStreamData *stTmpTSData) 
 {
 	unsigned int unChannelData[MAX_TX_CHANNEL] = {				// 16
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
+							0x0400, 0x0400,	0x00CC,	0x0400, 
+							0x00CC, 0x0400,	0x00CC,	0x00CC, 
+							0x00CC, 0x0400,	0x0400,	0x0400, 
+							0x0400, 0x0400,	0x0400,	0x0400, 
 							};
 	uint8_t		ucChannelBuffer[MAX_TX_CHANNEL_BUF_LEN];	// 22
 	uint8_t	ucRxNum;
@@ -182,7 +184,9 @@ void Fill_TxStream_Buf(union TxStreamData *stTmpTSData)
 	Encode_TxStream_Channel_Data(ucChannelBuffer, unChannelData);	// dest, src
 	memcpy(stTmpTSData->stTS.ucChan, ucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);
 
+#ifdef DEBUG_NK
 	Print_TxStream_Channel_Buffer(stTmpTSData->stTS.ucChan);
+#endif
 }
 
 int SetBaudRate(int fd) 
@@ -291,7 +295,9 @@ int main(int argc, char *argv[])
 
 		Encode_TxStream_Channel_Data(pstTSB->stTS.ucChan, unChannelData);	// dest, src
 
-//		Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
+#ifdef DEBUG_NK
+		Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
+#endif
 
 		printf("rx_ok_buff : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\n", 
 					pstTSB->TS_HEAD, 

@@ -103,7 +103,7 @@ void Decode_TxStream_Channel_Buffer(uint8_t *pucTxStreamChannel, unsigned int *p
 
 		temp = ((*((uint32_t *)p))>>dec) & 0x7FF;
 
-		printf("p : %p, %u(0x%08x)\n", p, *(unsigned int *)p, *(unsigned int *)p);
+//		printf("p : %p, %u(0x%08x)\n", p, *(unsigned int *)p, *(unsigned int *)p);
 
 		punChannelData[i] = temp & 0xFFFF;
 		p++;
@@ -146,6 +146,7 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 	}
 	printf("\n");
 
+#if 0
 	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {
 
 		for( j = 0; j < (sizeof(uint8_t) * 8); j++) {
@@ -159,6 +160,7 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 		printf("  ");
 	}
 	printf("\n");
+#endif
 }
 
 void Fill_TxStream_Buf(union TxStreamData *stTmpTSData) 

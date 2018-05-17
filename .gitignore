@@ -1,0 +1,13 @@
+# No .o (object) file
+*.o
+
+# No executable file
+DIY-Multiprotocol_Decode_Log
+DIY-Multiprotocol_RX
+DIY-Multiprotocol_TX_from_File
+ValidateOutputFile
+DIY-Multiprotocol_Encode_Log
+DIY-Multiprotocol_TX
+GenerateTestInput
+ValidateOutputFile2
+edecode_test

@@ -5,6 +5,10 @@
 #include <termios.h>
 #include <string.h>
 #include <time.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "joystick.h"
+
 
 #define MAX_TX_STREAM_LEN			26
 #define MAX_TX_CHANNEL_BUF_LEN		22
@@ -41,6 +45,10 @@ enum eSubProtocolType {
 	SUB_PROTOCOL_TYPE_SYMAX5C = 1,
 };
 
+enum InputSourceType {
+	IST_REG_FILE = 0,
+	IST_CHAR_DEV = 1,
+};
 
 enum eBind {
 	BIND_OFF = 0,
@@ -66,6 +74,8 @@ union TxStreamData {
 #define TS_TYPE			stTS.ucType
 #define TS_OPROTOCOL 	stTS.ucOptionProtocol
 #define TS_CH(x)		stTS.ucChan[x]
+
+unsigned int gunDebugMask;
 
 void Encode_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, unsigned int *punChannelData) 
 {
@@ -173,13 +183,16 @@ void Fill_TxStream_Buf(union TxStreamData *stTmpTSData)
 	stTmpTSData->stTS.ucOptionProtocol = 0; // -128..127
 
 	Clear_TxStream_Channel_Buffer(ucChannelBuffer);
-
+#ifdef DEBUG_NK
 	Print_TxStream_Channel_Data(unChannelData);
+#endif
 
 	Encode_TxStream_Channel_Data(ucChannelBuffer, unChannelData);	// dest, src
-	memcpy(stTmpTSData->stTS.ucChan, ucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);
+	memcpy(stTmpTSData->stTS.ucChan, ucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);	// 22
 
+#ifdef DEBUG_NK
 	Print_TxStream_Channel_Buffer(stTmpTSData->stTS.ucChan);
+#endif
 }
 
 int SetBaudRate(int fd) 
@@ -216,11 +229,24 @@ int SetBaudRate(int fd)
 	tcsetattr(fd,TCSANOW,&SerialPortSettings);
 }
 
+void Print_Usage(void)
+{
+	printf("\n");
+	printf("$ DIY-Multiprotocol_TX [dst] [src] [xmit_delay]\n");
+	printf("\n");
+	printf(" - dst : Destination device file name \n");
+	printf(" - src : Source device file name \n");
+	printf("   * filename  : when it transmits the data from the file\n");
+	printf("   * input_dev : when it transmits the data from the input device such as joystick\n\n");
+	printf(" - xmit_delay : Optional. Only effective when the delay value is passed. Or run with the default xmit-delay\n\n\n\n");
+}
+
 int main(int argc, char *argv[]) 
 {
 	FILE *fpi;
 	int fd, nRet;
 	union TxStreamData stTxStreamBuffer;
+
 	union TxStreamData *pstTSB;
 	unsigned int unChannelData[MAX_TX_CHANNEL];	// 16
 	int i, j, k, count;
@@ -228,9 +254,12 @@ int main(int argc, char *argv[])
 	struct timeval tv_start, tv_end;
 	unsigned long elapsed_time;
 	unsigned int unXmitDelay;
+	unsigned int unInputSource;
+	struct stat stStatBuf;
 
 	if( argc < 3 ) {
 		printf("Not engouth argument !!\n");
+		Print_Usage();
 		exit(1);
 	}
 
@@ -240,15 +269,41 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	fpi = fopen(argv[2], "r");
-	if( fpi == NULL ) {
-		printf("Error - File(%s) open !!\n", argv[2]);
-		exit(1);
+	if( stat(argv[2], &stStatBuf) != 0 ) {
+		printf("Erro - stat(%s) \n", argv[2]);
+		goto ErrExit1;
 	}
 
-	if( fseek(fpi, 0, SEEK_SET) != 0 ) {
-		printf("Error - fseek \n");
+	/* 
+	 * The input source could be a file or serial device 
+	 *
+	 */
+	if( stStatBuf.st_mode & S_IFREG ) {
+		unInputSource = IST_REG_FILE;	
+		printf("Input from a regular file \n");
+	} else if( stStatBuf.st_mode & S_IFCHR ) {
+		unInputSource = IST_CHAR_DEV;
+		printf("Input from an input device\n");
 	}
+
+	if( unInputSource == IST_CHAR_DEV ) { 
+		if( js_open(argv[2]) < 0 ) {
+			goto ErrExit1;
+		}
+
+	} else if ( unInputSource == IST_REG_FILE ) {
+
+		fpi = fopen(argv[2], "r");
+		if( fpi == NULL ) {
+			printf("Error - File(%s) open !!\n", argv[2]);
+			goto ErrExit1;
+		}
+
+		if( fseek(fpi, 0, SEEK_SET) != 0 ) {
+			printf("Error - fseek \n");
+		}
+	}
+
 
 	if( argc == 4 ) {
 		unXmitDelay = atoi(argv[3]);
@@ -272,10 +327,14 @@ int main(int argc, char *argv[])
 
 	gettimeofday(&tv_start, NULL);
 
-	for(count = 0; !feof(fpi); count++ ) {
-		memset(pstTSB, 0x00, MAX_TX_STREAM_LEN);	// 26
+	if( unInputSource == IST_CHAR_DEV ) { 
 
-		fscanf(fpi, "rx_ok_buff : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r",
+	} else if ( unInputSource == IST_REG_FILE ) {
+
+		for(count = 0; !feof(fpi); count++ ) {
+			memset(pstTSB, 0x00, MAX_TX_STREAM_LEN);	// 26
+
+			fscanf(fpi, "rx_ok_buff : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\r",
 						(unsigned int *)&unTmp[0],
 						(unsigned int *)&unTmp[1],
 						(unsigned int *)&unTmp[2],
@@ -304,64 +363,60 @@ int main(int argc, char *argv[])
 						(unsigned int *)&unTmp[25]
 						);
 
-					for( i = 0; i < MAX_TX_STREAM_LEN; i++ ) {
-						pstTSB->ucByte[i] = unTmp[i];	
-					}
+			for( i = 0; i < MAX_TX_STREAM_LEN; i++ ) {
+				pstTSB->ucByte[i] = unTmp[i];	
+			}
 #ifdef DEBUG_NK
-		printf("rx_ok_buff [count:%d] : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\n", count,
-					pstTSB->TS_HEAD, 
-					pstTSB->TS_SPROTOCOL, 
-					pstTSB->TS_TYPE, 
-					pstTSB->TS_OPROTOCOL,
-					(unsigned char)pstTSB->TS_CH(0),
-					(unsigned char)pstTSB->TS_CH(1),
-					(unsigned char)pstTSB->TS_CH(2),
-					(unsigned char)pstTSB->TS_CH(3),
-					(unsigned char)pstTSB->TS_CH(4),
-					(unsigned char)pstTSB->TS_CH(5),
-					(unsigned char)pstTSB->TS_CH(6),
-					(unsigned char)pstTSB->TS_CH(7),
-					(unsigned char)pstTSB->TS_CH(8),
-					(unsigned char)pstTSB->TS_CH(9),
-					(unsigned char)pstTSB->TS_CH(10),
-					(unsigned char)pstTSB->TS_CH(11),
-					(unsigned char)pstTSB->TS_CH(12),
-					(unsigned char)pstTSB->TS_CH(13),
-					(unsigned char)pstTSB->TS_CH(14),
-					(unsigned char)pstTSB->TS_CH(15),
-					(unsigned char)pstTSB->TS_CH(16),
-					(unsigned char)pstTSB->TS_CH(17),
-					(unsigned char)pstTSB->TS_CH(18),
-					(unsigned char)pstTSB->TS_CH(19),
-					(unsigned char)pstTSB->TS_CH(20),
-					(unsigned char)pstTSB->TS_CH(21));
+			printf("rx_ok_buff [count:%d] : 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x\n", count,
+						pstTSB->TS_HEAD, 
+						pstTSB->TS_SPROTOCOL, 
+						pstTSB->TS_TYPE, 
+						pstTSB->TS_OPROTOCOL,
+						(unsigned char)pstTSB->TS_CH(0),
+						(unsigned char)pstTSB->TS_CH(1),
+						(unsigned char)pstTSB->TS_CH(2),
+						(unsigned char)pstTSB->TS_CH(3),
+						(unsigned char)pstTSB->TS_CH(4),
+						(unsigned char)pstTSB->TS_CH(5),
+						(unsigned char)pstTSB->TS_CH(6),
+						(unsigned char)pstTSB->TS_CH(7),
+						(unsigned char)pstTSB->TS_CH(8),
+						(unsigned char)pstTSB->TS_CH(9),
+						(unsigned char)pstTSB->TS_CH(10),
+						(unsigned char)pstTSB->TS_CH(11),
+						(unsigned char)pstTSB->TS_CH(12),
+						(unsigned char)pstTSB->TS_CH(13),
+						(unsigned char)pstTSB->TS_CH(14),
+						(unsigned char)pstTSB->TS_CH(15),
+						(unsigned char)pstTSB->TS_CH(16),
+						(unsigned char)pstTSB->TS_CH(17),
+						(unsigned char)pstTSB->TS_CH(18),
+						(unsigned char)pstTSB->TS_CH(19),
+						(unsigned char)pstTSB->TS_CH(20),
+						(unsigned char)pstTSB->TS_CH(21));
 #endif
 
-//		Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
-
-//		Decode_TxStream_Channel_Buffer((uint8_t *)&pstTSB->TS_CH(0), usChannelData);
+//			Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
+//			Decode_TxStream_Channel_Buffer((uint8_t *)&pstTSB->TS_CH(0), usChannelData);
 
 #if 1
-		for(i = 0; i < MAX_TX_STREAM_LEN; i++) {
-			nRet = write(fd, &pstTSB->ucByte[i], sizeof(uint8_t));
-			if( nRet < 0 ) {
-				printf("Error - write !!\n");
-				exit(1);
-			}
-			if( nRet != 1 ) {
-				printf("Error - Not fully written as given bytes !!\n");
-				exit(1);
+			for(i = 0; i < MAX_TX_STREAM_LEN; i++) {
+				nRet = write(fd, &pstTSB->ucByte[i], sizeof(uint8_t));
+				if( nRet < 0 ) {
+					printf("Error - write !!\n");
+					exit(1);
+				}
+				if( nRet != 1 ) {
+					printf("Error - Not fully written as given bytes !!\n");
+					exit(1);
+				}
 			}
 			// 115200 bps : 14400 bytes/sec (69 us/ch)
 			// 100000 bps : 12500 bytes/sec (80 us/ch)
-//			printf("%02x ", pstTSB->ucByte[i]);
-			// 150 us delay -> 211 us/ch
-			// 100 us delay -> 165 us/ch
-			//  50 us delay -> 112 us/ch
-			// NK - VERY IMPORTANT POINT
-			// It's working in the given code, very dependent to the time for looping
+			// 9XR transmits the data in 100000 bps rate and 26 bytes are transmitted in about 3 ms.
+			// And the delay btw. the 26 bytes stream data is around 11 ms
+			// So, 11 - 3 = 8 ms delay is recommended. but, 5 ms delay is also working well.
 			usleep(unXmitDelay);
-		}
 #else
 			nRet = write(fd, pstTSB->ucByte, MAX_TX_STREAM_LEN);
 			if( nRet < 0 ) {
@@ -374,12 +429,20 @@ int main(int argc, char *argv[])
 			}
 			usleep(200);
 #endif
-	}
+		}
+	} 
+
 	gettimeofday(&tv_end, NULL);
 
 	elapsed_time = (tv_end.tv_sec - tv_start.tv_sec)*1000000 + tv_end.tv_usec - tv_start.tv_usec;
 	printf("Elapsed time : %ld us\n", elapsed_time);
 
+ErrExit1:
 	close(fd);
-	fclose(fpi);
+
+	if( unInputSource == IST_CHAR_DEV ) { 
+		js_close();
+	} else if ( unInputSource == IST_REG_FILE ) {
+		fclose(fpi);
+	}
 }

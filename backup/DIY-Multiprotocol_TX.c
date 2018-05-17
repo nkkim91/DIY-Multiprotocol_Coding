@@ -65,7 +65,7 @@ union TxStreamData {
 #define TS_OPROTOCOL 	stTS.ucOptionProtocol
 #define TS_CH(x)		stTS.ucChan[x]
 
-void Fill_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, uint16_t *pusChannelData) 
+void Encode_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, unsigned int *punChannelData) 
 {
 	uint8_t *p=pucTxStreamChannel;
 	uint8_t dec=-3;
@@ -80,17 +80,17 @@ void Fill_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, uint16_t *pusChanne
 			p++;
 		}
 
-		*(uint32_t *)p |= ((pusChannelData[i] & 0x7FF) << dec);	// Value ange 0..2047, 0=-125%, 2047=+125%
+		*(uint32_t *)p |= ((punChannelData[i] & 0x7FF) << dec);	// Value ange 0..2047, 0=-125%, 2047=+125%
 		p++;
 	}
 }
 
-void Decode_TxStream_Channel_Buffer(uint8_t *pucTxStreamChannel, uint16_t *pusChannelData) 
+void Decode_TxStream_Channel_Buffer(uint8_t *pucTxStreamChannel, unsigned int *punChannelData) 	// src, dest
 {
 	uint8_t *p=pucTxStreamChannel;
 	uint8_t dec=-3;
 	uint8_t i;
-	uint16_t temp;
+	unsigned int temp;
 
 	for(i=0;i < MAX_TX_CHANNEL;i++)
 	{
@@ -103,7 +103,7 @@ void Decode_TxStream_Channel_Buffer(uint8_t *pucTxStreamChannel, uint16_t *pusCh
 
 		temp = ((*((uint32_t *)p))>>dec) & 0x7FF;
 
-		pusChannelData[i] = temp;
+		punChannelData[i] = temp & 0xFFFF;
 		p++;
 	}
 }
@@ -118,13 +118,13 @@ void Clear_TxStream_Channel_Buffer(unsigned char *pucTxStreamChannel)
 }
 
 
-void Print_TxStream_Channel_Data(uint16_t *pusChannelData) 
+void Print_TxStream_Channel_Data(unsigned int *punChannelData) 
 {
 	int i;
 
 	printf("Channel Data : ");
 	for( i = 0; i < MAX_TX_CHANNEL; i++) {
-		printf("0x%04x ", pusChannelData[i]);
+		printf("0x%04x ", punChannelData[i]);
 	}
 	printf("\n");
 }
@@ -134,7 +134,7 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 	int i, j;
 
 	printf("Channel Buffer : ");
-	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {
+	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {	//	26
 		printf("0x%02x ", pucChannelBuffer[i]);
 	}
 	printf("\n");
@@ -156,7 +156,7 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 
 void Fill_TxStream_Buf(union TxStreamData *stTmpTSData) 
 {
-	uint16_t	ChannelData[MAX_TX_CHANNEL] = {				// 16
+	unsigned int unChannelData[MAX_TX_CHANNEL] = {				// 16
 							0x7FF, 	0, 		0x7FF, 	0, 
 							0x7FF, 	0, 		0x7FF, 	0, 
 							0x7FF, 	0, 		0x7FF, 	0, 
@@ -172,10 +172,10 @@ void Fill_TxStream_Buf(union TxStreamData *stTmpTSData)
 
 	Clear_TxStream_Channel_Buffer(ucChannelBuffer);
 #ifdef DEBUG_NK
-	Print_TxStream_Channel_Data(ChannelData);
+	Print_TxStream_Channel_Data(unChannelData);
 #endif
 
-	Fill_TxStream_Channel_Data(ucChannelBuffer, ChannelData);	// dest, src
+	Encode_TxStream_Channel_Data(ucChannelBuffer, unChannelData);	// dest, src
 	memcpy(stTmpTSData->stTS.ucChan, ucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);	// 22
 
 #ifdef DEBUG_NK
@@ -219,9 +219,8 @@ int SetBaudRate(int fd)
 
 int main(int argc, char *argv[]) 
 {
-
 	int fd;
-	union TxStreamData stTxStreamBuf;
+	union TxStreamData stTxStreamBuffer;
 
 	struct timeval tv_start, tv_end;
 	unsigned long elapsed_time;
@@ -247,7 +246,7 @@ int main(int argc, char *argv[])
 		printf("Write TX Stream ! \n");
 		Fill_TxStream_Buf(&stTxStreamBuf);
 
-		write(fd, &stTxStreamBuf, MAX_TX_STREAM_LEN);
+		write(fd, &stTxStreamBuffer, MAX_TX_STREAM_LEN);
 
 		gettimeofday(&tv_end, NULL);
 

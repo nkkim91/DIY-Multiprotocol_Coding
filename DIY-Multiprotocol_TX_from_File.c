@@ -8,74 +8,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "joystick.h"
+#include "StreamData.h"
+#include "common.h"
 
-
-#define MAX_TX_STREAM_LEN			26
-#define MAX_TX_CHANNEL_BUF_LEN		22
-#define MAX_TX_CHANNEL				16
-
-#define DEFAULT_XMIT_DELAY	(60)
-
-//#define DEBUG_NK
-
-typedef signed char int8_t;
-typedef unsigned char uint8_t;
-typedef signed short int16_t;
-typedef unsigned short uint16_t;
-typedef signed int int32_t;
-typedef unsigned int uint32_t;
-
-enum eChanTxProtocol {
-	AILERON	= 0,
-	ELEVATOR = 1,
-	THROTTLE = 2,
-	RUDDER = 3,
-	FLIP = 4,
-	PICTURE = 6,
-	VIDEO = 7,
-	HEADLESS = 8,
-};
-
-enum eSubProtocol {
-	SUB_PROTOCOL_SYMAX = 10,
-};
-
-enum eSubProtocolType {
-	SUB_PROTOCOL_TYPE_SYMAX = 0,
-	SUB_PROTOCOL_TYPE_SYMAX5C = 1,
-};
-
-enum InputSourceType {
-	IST_REG_FILE = 0,
-	IST_CHAR_DEV = 1,
-};
-
-enum eBind {
-	BIND_OFF = 0,
-	BIND_ON = 1,
-};
-struct TxStream {
-	uint8_t ucHead;
-	uint8_t ucSubProtocol;
-	uint8_t	ucType;
-	uint8_t	ucOptionProtocol;
-	uint8_t ucChan[MAX_TX_CHANNEL_BUF_LEN];	// 22(x unsighed char) => 16 (x unsigned short)
-};
-
-#define TX_STREAM_SIZE	sizeof(struct TxStream)
-
-union TxStreamData {
-	struct TxStream stTS;
-	uint8_t ucByte[TX_STREAM_SIZE];
-};
-
-#define TS_HEAD			stTS.ucHead
-#define TS_SPROTOCOL	stTS.ucSubProtocol
-#define TS_TYPE			stTS.ucType
-#define TS_OPROTOCOL 	stTS.ucOptionProtocol
-#define TS_CH(x)		stTS.ucChan[x]
-
-unsigned int gunDebugMask;
+unsigned int gunDebugMask = NK_DEBUG_DEBUG;
+unsigned char gucState = 0x00;
 
 void Encode_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, unsigned int *punChannelData) 
 {
@@ -120,6 +57,15 @@ void Decode_TxStream_Channel_Buffer(uint8_t *pucTxStreamChannel, unsigned int *p
 	}
 }
 
+void Clear_TxStream_Channel_Data(unsigned int *punChannelData)
+{
+	int i;
+
+	for(i = 0; i < MAX_TX_CHANNEL; i++) {	// 16
+		punChannelData[i] = 0x0;	// Clear
+	}
+}
+
 void Clear_TxStream_Channel_Buffer(unsigned char *pucTxStreamChannel)
 {
 	int i;
@@ -130,13 +76,31 @@ void Clear_TxStream_Channel_Buffer(unsigned char *pucTxStreamChannel)
 }
 
 
+
+int Adjust_Input_Channel_Data(unsigned int *punChannelData)
+{
+	int i;
+
+	punChannelData[AILERON] = (punChannelData[AILERON] + JOYSTICK_INPUT_MAX) * CHANNEL_MAX_VALUE / (JOYSTICK_INPUT_MAX*2);
+	punChannelData[AILERON] = punChannelData[AILERON] + CHANNEL_MINUS100P_VALUE;
+
+	punChannelData[ELEVATOR] = (punChannelData[ELEVATOR] + JOYSTICK_INPUT_MAX) * CHANNEL_MAX_VALUE / (JOYSTICK_INPUT_MAX*2);
+	punChannelData[ELEVATOR] = punChannelData[ELEVATOR] + CHANNEL_MINUS100P_VALUE;
+
+	punChannelData[THROTTLE] = (punChannelData[THROTTLE] + JOYSTICK_INPUT_MAX) * CHANNEL_MAX_VALUE / (JOYSTICK_INPUT_MAX*2);
+	punChannelData[THROTTLE] = CHANNEL_MAX_VALUE - punChannelData[THROTTLE] + CHANNEL_MINUS100P_VALUE;
+
+	punChannelData[RUDDER] = (punChannelData[RUDDER] + JOYSTICK_INPUT_MAX) * CHANNEL_MAX_VALUE / (JOYSTICK_INPUT_MAX*2);
+	punChannelData[RUDDER] = punChannelData[RUDDER] + CHANNEL_MINUS100P_VALUE;
+}
+
 void Print_TxStream_Channel_Data(unsigned int *punChannelData) 
 {
 	int i;
 
-	printf("Channel Data : ");
+	printf("Decoded_Stream_Data : ");
 	for( i = 0; i < MAX_TX_CHANNEL; i++) {
-		printf("0x%04x ", punChannelData[i]);
+		printf("0x%04x ", punChannelData[i] & 0xFFFF);
 	}
 	printf("\n");
 }
@@ -145,12 +109,13 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 {
 	int i, j;
 
-	printf("Channel Buffer : ");
+	printf("rx_ok_buff : ");
 	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {	//	26
 		printf("0x%02x ", pucChannelBuffer[i]);
 	}
 	printf("\n");
 
+#if 0
 	for( i = 0; i < MAX_TX_CHANNEL_BUF_LEN; i++) {
 
 		for( j = 0; j < (sizeof(uint8_t) * 8); j++) {
@@ -164,31 +129,23 @@ void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer)
 		printf("  ");
 	}
 	printf("\n");
+#endif
 }
 
-void Fill_TxStream_Buf(union TxStreamData *stTmpTSData) 
+void Fill_TxStream_Buffer(union TxStreamData *stTmpTSData, unsigned char *pucChannelBuffer) 
 {
-	unsigned int unChannelData[MAX_TX_CHANNEL] = {				// 16
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
-							0x7FF, 	0, 		0x7FF, 	0, 
-							};
-	uint8_t		ucChannelBuffer[MAX_TX_CHANNEL_BUF_LEN];	// 22
 	uint8_t	ucRxNum;
 
 	stTmpTSData->stTS.ucHead = 0x55;	//
-	stTmpTSData->stTS.ucSubProtocol = BIND_OFF << 7 | SUB_PROTOCOL_SYMAX;	//
+	if( gucState != BIND_DONE ) {
+		stTmpTSData->stTS.ucSubProtocol = BIND_ON << 7 | SUB_PROTOCOL_SYMAX;	//
+	} else {
+		stTmpTSData->stTS.ucSubProtocol = BIND_OFF << 7 | SUB_PROTOCOL_SYMAX;	//
+	}
 	stTmpTSData->stTS.ucType = SUB_PROTOCOL_TYPE_SYMAX << 4 | (ucRxNum % 16) & 0xF;
 	stTmpTSData->stTS.ucOptionProtocol = 0; // -128..127
 
-	Clear_TxStream_Channel_Buffer(ucChannelBuffer);
-#ifdef DEBUG_NK
-	Print_TxStream_Channel_Data(unChannelData);
-#endif
-
-	Encode_TxStream_Channel_Data(ucChannelBuffer, unChannelData);	// dest, src
-	memcpy(stTmpTSData->stTS.ucChan, ucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);	// 22
+	memcpy(stTmpTSData->stTS.ucChan, pucChannelBuffer, MAX_TX_CHANNEL_BUF_LEN);	// 22
 
 #ifdef DEBUG_NK
 	Print_TxStream_Channel_Buffer(stTmpTSData->stTS.ucChan);
@@ -241,17 +198,61 @@ void Print_Usage(void)
 	printf(" - xmit_delay : Optional. Only effective when the delay value is passed. Or run with the default xmit-delay\n\n\n\n");
 }
 
+int Check_Bind_State(struct timeval *pstTVStart, struct timeval *pstTVBindTimeout)
+{
+	unsigned long delta_sec;
+	unsigned long delta_usec;
+	unsigned long delta_in_usec;
+	int nRet = 0;
+
+	delta_sec = pstTVBindTimeout->tv_sec - pstTVStart->tv_sec;
+	if( delta_sec < 0 ) {
+		printf("Error - Time Value is invalid !!\n");
+		nRet = BIND_UNKNOWN;
+		goto ErrExit;
+	}
+
+	if( pstTVBindTimeout->tv_usec - pstTVStart->tv_usec < 0 ) {	// Need borrow
+		delta_sec -= 1;
+		if( delta_sec < 0 ) {
+			nRet = BIND_UNKNOWN;
+			gucState = BIND_UNKNOWN;
+			goto ErrExit;
+		}
+		pstTVBindTimeout->tv_usec += 1000000;
+	} 
+	delta_usec = pstTVBindTimeout->tv_usec - pstTVStart->tv_usec;
+	delta_in_usec = delta_sec * 1000000 + delta_usec;	
+
+#ifdef DEBUG_NK
+	printf("Delta : %ld\n", delta_in_usec);
+#endif
+
+	if( delta_in_usec > BIND_TIME_OUT * 1000000 ) {
+		nRet = BIND_DONE;
+		gucState = BIND_DONE;
+	} else {
+		nRet = BIND_YET;
+		gucState = BIND_YET;
+	}
+
+ErrExit:
+	return nRet;
+}
+
 int main(int argc, char *argv[]) 
 {
 	FILE *fpi;
 	int fd, nRet;
 	union TxStreamData stTxStreamBuffer;
-
 	union TxStreamData *pstTSB;
+
 	unsigned int unChannelData[MAX_TX_CHANNEL];	// 16
+	unsigned char ucChannelBuffer[MAX_TX_CHANNEL_BUF_LEN];	// 22
+
 	int i, j, k, count;
 	unsigned int unTmp[MAX_TX_STREAM_LEN];
-	struct timeval tv_start, tv_end;
+	struct timeval tv_start, tv_end, tv_bind_timeout;
 	unsigned long elapsed_time;
 	unsigned int unXmitDelay;
 	unsigned int unInputSource;
@@ -291,6 +292,8 @@ int main(int argc, char *argv[])
 			goto ErrExit1;
 		}
 
+		js_init();
+
 	} else if ( unInputSource == IST_REG_FILE ) {
 
 		fpi = fopen(argv[2], "r");
@@ -328,6 +331,70 @@ int main(int argc, char *argv[])
 	gettimeofday(&tv_start, NULL);
 
 	if( unInputSource == IST_CHAR_DEV ) { 
+
+		for(  ; 1 ; ) {
+
+			gettimeofday(&tv_bind_timeout, NULL);
+			Check_Bind_State(&tv_start, &tv_bind_timeout);
+
+			memset(pstTSB, 0x00, MAX_TX_STREAM_LEN);	// 26
+			memset(ucChannelBuffer, 0x00, MAX_TX_CHANNEL_BUF_LEN);	// 22
+			Clear_TxStream_Channel_Data(unChannelData);
+
+			if( (nRet = js_input(unChannelData)) >= 0 ) {
+
+				if( gunDebugMask & NK_DEBUG_DEBUG) {	 
+					printf("nRet from js_input : %d\n", nRet);	
+				}
+
+				if( gunDebugMask & NK_DEBUG_DEBUG) {	 
+					printf("1---------------------------------------------------------------------------------------\n");
+					Print_TxStream_Channel_Data(unChannelData);
+				}
+
+				Adjust_Input_Channel_Data(unChannelData);
+
+				if( gunDebugMask & NK_DEBUG_DEBUG) {	 
+					printf("2-----------------------\n");
+					Print_TxStream_Channel_Data(unChannelData);
+				}
+
+				Encode_TxStream_Channel_Data(ucChannelBuffer, unChannelData);	// dest, src
+
+				if( gunDebugMask & NK_DEBUG_DEBUG) {	 
+					Print_TxStream_Channel_Buffer(ucChannelBuffer);
+					printf("3-----------------------\n");
+				}
+
+				Fill_TxStream_Buffer(pstTSB, ucChannelBuffer);
+
+				if( gunDebugMask & NK_DEBUG_DEBUG) {	 
+					Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
+					printf("4-----------------------\n");
+				}
+
+				for(i = 0; i < MAX_TX_STREAM_LEN; i++) {
+					nRet = write(fd, &pstTSB->ucByte[i], sizeof(uint8_t));
+					if( nRet < 0 ) {
+						printf("Error - write !!\n");
+						exit(1);
+					}
+					if( nRet != 1 ) {
+						printf("Error - Not fully written as given bytes !!\n");
+						exit(1);
+					}
+				}
+
+			} 
+			// 115200 bps : 14400 bytes/sec (69 us/ch)
+			// 100000 bps : 12500 bytes/sec (80 us/ch)
+			// 9XR transmits the data in 100000 bps rate and 26 bytes are transmitted in about 3 ms.
+			// And the delay btw. the 26 bytes stream data is around 11 ms
+			// So, 11 - 3 = 8 ms delay is recommended. but, 5 ms delay is also working well.
+
+			usleep(unXmitDelay);
+
+		} // End of for
 
 	} else if ( unInputSource == IST_REG_FILE ) {
 
@@ -397,7 +464,7 @@ int main(int argc, char *argv[])
 #endif
 
 //			Print_TxStream_Channel_Buffer(pstTSB->stTS.ucChan);
-//			Decode_TxStream_Channel_Buffer((uint8_t *)&pstTSB->TS_CH(0), usChannelData);
+//			Decode_TxStream_Channel_Buffer((uint8_t *)&pstTSB->TS_CH(0), unChannelData);
 
 #if 1
 			for(i = 0; i < MAX_TX_STREAM_LEN; i++) {

@@ -42,6 +42,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 
 #include <linux/input.h>
 #include <linux/joystick.h>
@@ -49,6 +50,7 @@
 #include "axbtnmap.h"
 //#include "serial_input.h"
 #include "common.h"
+#include "StreamData.h"
 
 char *axis_names[ABS_MAX + 1] = {
 "X", "Y", "Z", "Rx", "Ry", "Rz", "Throttle", "Rudder", 
@@ -69,25 +71,33 @@ char *button_names[KEY_MAX - BTN_MISC + 1] = {
 #define NAME_LENGTH 128
 #define JS_NORMAL
 //#define JS_EVENT
-//#define JS_OLD
+// JS_OLD doesn't fully support the available axis and buttons
+//#define JS_OLD	
 
 int nJSDevFD;
-unsigned char gcAxes = 2;
+unsigned char gcAxis = 2;
 unsigned char gcButtons = 2;
+int *gpnAxis;
+char *gpcButtons;
+
 int gnVersion = 0x000800;
 char gcName[NAME_LENGTH] = "Unknown";
 uint16_t gusBtnmap[BTNMAP_SIZE];	/* KEY_MAX_LARGE(0x2FF) - BTN_MISC(0x100) + 1 */
 uint8_t gucAxmap[AXMAP_SIZE];	/* ABS_MAX(0x3F) + 1 */
 int gnBtnmapok = 1;
 
+int gnAIL_RUD = AILERON;
+
 extern union ChannelPacketData_b gstTxChannelPacketData, gstTempTxChannelPacketData;
 extern unsigned int gunDebugMask;
+
+static unsigned int gunChannelDataBackup[MAX_TX_CHANNEL];	/* Local Back up data */
 
 int js_open(char *device)
 {
 	int nRet = 0;
 	
-	if ((nJSDevFD = open(device, O_RDONLY | O_NONBLOCK)) < 0) {
+	if ((nJSDevFD = open(device, O_RDONLY | O_NONBLOCK)) < 0) {	// O_SYNC
 		printf("Error - open (%s)\n", device);
 		nRet = -1;
 	}
@@ -106,10 +116,10 @@ int js_close(void)
 
 int js_init (void)
 {
-	int32_t i;
+	int i;
 
 	ioctl(nJSDevFD, JSIOCGVERSION, &gnVersion);
-	ioctl(nJSDevFD, JSIOCGAXES, &gcAxes);
+	ioctl(nJSDevFD, JSIOCGAXES, &gcAxis);
 	ioctl(nJSDevFD, JSIOCGBUTTONS, &gcButtons);
 	ioctl(nJSDevFD, JSIOCGNAME(NAME_LENGTH), gcName);
 
@@ -131,10 +141,10 @@ int js_init (void)
 	if (!gnBtnmapok) {
 		/* btnmap out of range for names. Don't print any. */
 		printf("It's not fully compatible with your kernel. Unable to retrieve button map!");
-		printf("Joystick (%s) has %d axes and %d buttons.\n", gcName, gcAxes, gcButtons);
+		printf("Joystick (%s) has %d axes and %d buttons.\n", gcName, gcAxis, gcButtons);
 	} else {
-		printf("Joystick (%s) has %d axes (", gcName, gcAxes);
-		for (i = 0; i < gcAxes; i++)
+		printf("Joystick (%s) has %d axes (", gcName, gcAxis);
+		for (i = 0; i < gcAxis; i++)
 			printf("%s%s", i > 0 ? ", " : "", axis_names[gucAxmap[i]]);	/* gucAxmap[i] = 0, 1, 6 */
 		puts(")");
 		printf("and %d buttons (", gcButtons);
@@ -144,89 +154,210 @@ int js_init (void)
 		puts(").");
 	}
 
+	gpnAxis = calloc(gcAxis, sizeof(int));
+	gpcButtons = calloc(gcButtons, sizeof(char));
+
+#if 0
+	unChannelDataLB[AILERON] = JOYSTICK_AILERON_MID;
+	unChannelDataLB[ELEVATOR] = JOYSTICK_ELEVATOR_MID;
+	unChannelDataLB[THROTTLE] = JOYSTICK_THROTTLE_MIN;
+	unChannelDataLB[RUDDER] = JOYSTICK_RUDDER_MID;
+#endif
+
 	return 0;
 }
 
-int js_input(unsigned int *unChannelData)
+void js_deinit(void)
 {
-	int i;
 
-	int *axis;
-	char *button;
+	free(gpnAxis);
+	free(gpcButtons);
+}
+
+int js_input(unsigned int *punChannelData)
+{
+	int i, nRet = 0;
+
 #if defined(JS_NORMAL) || defined(JS_EVENT)
 	struct js_event js;
 #elif defined(JS_OLD) 
 	struct JS_DATA_TYPE js; 
 #endif
+	struct timeval tv;
 
 #ifdef JS_NORMAL
 
-	axis = calloc(gcAxes, sizeof(int));
-	button = calloc(gcButtons, sizeof(char));
+	gettimeofday(&tv, NULL);
+	if( gunDebugMask & NK_DEBUG_DEBUG) {
+		printf("## NK [%s:%d:%ld.%06u] CK - 1 \n", __func__, __LINE__, tv.tv_sec, (unsigned int)tv.tv_usec);
+	}
 
-	if (read(nJSDevFD, &js, sizeof(struct js_event)) != sizeof(struct js_event)) {
+	if ((nRet = read(nJSDevFD, &js, sizeof(struct js_event))) != sizeof(struct js_event)) {
 		if( gunDebugMask & NK_DEBUG_SPOT ) {
 			printf("read() - Data not ready/available\n");
 		}
-		return 1;
-	}
 
-	switch(js.type & ~JS_EVENT_INIT) {
-		case JS_EVENT_BUTTON:	/* 0x01 */
-			button[js.number] = js.value;
-			break;
-		case JS_EVENT_AXIS:		/* 0x02 */
-			axis[js.number] = js.value;
-			break;
-		case JS_EVENT_INIT:		/* 0x80 */
-			break;
-	}
-
-	if( gunDebugMask & NK_DEBUG_DEBUG ) {
-		if (gcAxes) {
-			printf("Axes: ");
-			for (i = 0; i < gcAxes; i++)
-				printf("%2d:%6d ", i, axis[i]);
+		if( gunDebugMask & NK_DEBUG_DEBUG) {
+			printf("## [%s:%d] nRet : %d\n", __func__, __LINE__, nRet);
+			printf("ErrNo : %d\n", errno);
 		}
 
-		if (gcButtons) {
-			printf("Buttons: ");
-			for (i = 0; i < gcButtons; i++)
-				printf("%2d:%s ", i, button[i] ? "on " : "off");
+		if( nRet == -1 && errno == EAGAIN ) {
+			// Send the same Channel Data in the backup buffer
+			nRet = 0;
 		}
-		printf("\n");
-		fflush(stdout);
+//		goto Exit1;
+
+	} else {	/* read() returns less than expected. (No input event) return the same Channel data */
+
+		switch(js.type & ~JS_EVENT_INIT) {
+			case JS_EVENT_BUTTON:	/* 0x01 */
+				gpcButtons[js.number] = js.value;
+				switch(js.number) {
+					case 0 :
+						if( gpcButtons[0] == 1 ) {	// X axis is yaw when the gpcButtons[0] is pressed
+							gunChannelDataBackup[RUDDER] = gunChannelDataBackup[AILERON];
+							if( gunDebugMask & NK_DEBUG_DEBUG) {
+								printf("## Button Pressed  !!\n");
+							}
+						} else {
+							gunChannelDataBackup[RUDDER] = JOYSTICK_RUDDER_MID;
+							if( gunDebugMask & NK_DEBUG_DEBUG) {
+								printf("## Button Released !!\n");
+							}
+						}
+						break;
+					case 1 :
+						break;
+
+					default:
+						break;
+				}
+				break;
+			case JS_EVENT_AXIS:		/* 0x02 */
+				gpnAxis[js.number] = js.value;
+				switch(js.number) {
+					case 0 :	/* 1st X axis */
+						if( gpcButtons[0] == 1 ) {
+							gunChannelDataBackup[RUDDER] = gpnAxis[0];
+						} else {
+							gunChannelDataBackup[AILERON] = gpnAxis[0];
+						}
+						break;
+					case 1 :	/* 1st Y axis */ 
+						gunChannelDataBackup[ELEVATOR] = gpnAxis[1]; break;
+					case 2 : 	/* 2nd X axis */
+						gunChannelDataBackup[THROTTLE] = gpnAxis[2]; break;
+					default :
+						break;
+				}
+				break;
+			case JS_EVENT_INIT:		/* 0x80 */
+				break;
+		}
+
+		if( gunDebugMask & NK_DEBUG_DEBUG ) {
+			if (gcAxis) {
+				printf("Axes: ");
+				for (i = 0; i < gcAxis; i++)
+					printf("%2d:%6d ", i, gpnAxis[i]);
+			}
+	
+			if (gcButtons) {
+				printf("Buttons: ");
+				for (i = 0; i < gcButtons; i++)
+					printf("%2d:%s ", i, gpcButtons[i] ? "on " : "off");
+			}
+			printf("\n");
+			fflush(stdout);
+		}
 	}
+
+	/* */
+	memcpy(punChannelData, &gunChannelDataBackup, sizeof(unsigned int) * MAX_TX_CHANNEL);
+
+	gettimeofday(&tv, NULL);
+	if( gunDebugMask & NK_DEBUG_DEBUG) {
+		printf("## NK [%s:%d:%ld.%06u] CK - 3 \n", __func__, __LINE__, tv.tv_sec, (unsigned int)tv.tv_usec);
+	}
+
 #elif defined(JS_EVENT)
-	if (read(nJSDevFD, &js, sizeof(struct js_event)) != sizeof(struct js_event)) {
+	if ((nRet = read(nJSDevFD, &js, sizeof(struct js_event))) != sizeof(struct js_event)) {
 		if( gunDebugMask & NK_DEBUG_SPOT ) {
 			printf("read() - Data not ready/available\n");
 		}
-		return 1;
-	}
-	if( js.type == JS_EVENT_AXIS ) {	/* Axes = 2 */
-		switch(js.number) {
-			case 0 : 	/* 1st X axis */
-				if( gunDebugMask & NK_DEBUG_DEBUG ) {
-					printf("js.type = 2, js.number = 0, Set Rudder \n");
-				}
-				gstTempTxChannelPacketData.stChannelPacketData.stChannelData.ucRudder = ((65535 - (js.value + 32767)) >> 8) ;
-				break;
 
-			case 1 :	/* 1st Y axis */
-				if( gunDebugMask & NK_DEBUG_DEBUG ) {
-					printf("js.type = 2, js.number = 1, Set Elevator\n");
-				}
-				gstTempTxChannelPacketData.stChannelPacketData.stChannelData.ucElevator = ((js.value + 32767) >> 8);	/*  */
-				break;
-
-			default:
-				break;
+		if( gunDebugMask & NK_DEBUG_DEBUG) {
+			printf("## [%s:%d] nRet : %d\n", __func__, __LINE__, nRet);
+			printf("ErrNo : %d\n", errno);
 		}
-	}
 
-	if( js.type == JS_EVENT_BUTTON ) {	/* Button = 1 */
+		if( nRet == -1 && errno == EAGAIN ) {
+			// Send the same Channel Data in the backup buffer
+			nRet = 0;
+		}
 
+
+	} else {
+
+
+		if( js.type == JS_EVENT_AXIS ) {	/* Axes = 2 */
+			switch(js.number) {
+				case 0 : 	/* 1st X axis */
+					if( gunDebugMask & NK_DEBUG_DEBUG ) {
+						printf("js.type = 2, js.number = 0, Set Rudder \n");
+						printf("1st X Axis input (gnAIL_RUD : %d), gunChannelDataBackup[AILERON] : %d\n", gnAIL_RUD, gunChannelDataBackup[AILERON]);
+					}
+					if( gnAIL_RUD == RUDDER ) {	// X axis is yaw when the gpcButtons[0] is pressed
+						gunChannelDataBackup[RUDDER] = js.value;
+					} else {
+						gunChannelDataBackup[AILERON] = js.value;
+					}
+					break;
+
+				case 1 :	/* 1st Y axis */
+					if( gunDebugMask & NK_DEBUG_DEBUG ) {
+						printf("js.type = 2, js.number = 1, Set Elevator\n");
+					}
+					gunChannelDataBackup[ELEVATOR] = js.value;
+					break;
+
+				case 2 :	/* 2nd X axis */
+					if( gunDebugMask & NK_DEBUG_DEBUG ) {
+						printf("js.type = 2, js.number = 2, Set Throttle\n");
+					}
+					gunChannelDataBackup[THROTTLE] = js.value;
+					break;
+
+				default:
+					break;
+			}
+		}
+
+		if( js.type == JS_EVENT_BUTTON ) {	/* Button = 1 */
+			switch( js.number ) {
+				case 0 : 
+					if( js.value == 1 ) {	// X axis is yaw when the gpcButtons[0] is pressed
+						gunChannelDataBackup[RUDDER] = gunChannelDataBackup[AILERON];
+						gnAIL_RUD = RUDDER;
+						if( gunDebugMask & NK_DEBUG_DEBUG ) {
+							printf("Button pressed for Rudder input selection !!\n");
+						}
+					} else {
+						gunChannelDataBackup[AILERON] = gunChannelDataBackup[RUDDER];
+						gunChannelDataBackup[RUDDER] = JOYSTICK_RUDDER_MID;
+						gnAIL_RUD = AILERON;
+						if( gunDebugMask & NK_DEBUG_DEBUG ) {
+							printf("Button released for Aileron input selection !!\n");
+						}
+					}
+					break;
+				case 1 :
+					break;
+				default :
+					break;
+			}
+		}
 	}
 
 	if( gunDebugMask & NK_DEBUG_DEBUG ) {
@@ -234,19 +365,26 @@ int js_input(unsigned int *unChannelData)
 			js.type, js.time, js.number, js.value);
 		fflush(stdout);
 	}
+
+	/* */
+	memcpy(punChannelData, &gunChannelDataBackup, sizeof(unsigned int) * MAX_TX_CHANNEL);
+
 #elif defined(JS_OLD)
 
-	if (read(nJSDevFD, &js, JS_RETURN) != JS_RETURN) {
+	if ((nRet = read(nJSDevFD, &js, JS_RETURN)) != JS_RETURN) {
 		if( gunDebugMask & NK_DEBUG_SPOT ) {
 			printf("read() - Data not ready/available\n");
 		}
-		return 1;
+		goto Exit1;
 	}
 
 	if( gunDebugMask & NK_DEBUG_DEBUG ) {
 		printf("Axes: X:%3d Y:%3d Buttons: A:%s B:%s\n",
 			js.x, js.y, (js.buttons & 1) ? "on " : "off", (js.buttons & 2) ? "on " : "off");
 	}
+
+	gunChannelDataBackup[AILERON] = js.x;
+	gunChannelDataBackup[ELEVATOR] = js.y;
 
 	gstTempTxChannelPacketData.stChannelPacketData.stChannelData.ucRudder = js.x;
 	gstTempTxChannelPacketData.stChannelPacketData.stChannelData.ucElevator = js.y;
@@ -257,4 +395,6 @@ int js_input(unsigned int *unChannelData)
 #error "JS mode Not defined !!"
 #endif
 
+Exit1:
+	return nRet;
 }

@@ -134,6 +134,17 @@ void Print_TxStream_Decoded_Channel_Data(union TxStreamData *pstTSB, unsigned in
 	printf("\n");	// \n => 0x0A, \ => 0x0D
 }
 
+void Print_TxStream_Channel_Data(unsigned int *punChannelData) 
+{
+	int i;
+
+	printf("Decoded_Stream_Data : ");
+	for( i = 0; i < MAX_TX_CHANNEL; i++) {
+		printf("0x%04x ", punChannelData[i] & 0xFFFF);
+	}
+	printf("\n");
+}
+
 void Print_TxStream_Channel_Buffer(uint8_t *pucChannelBuffer) 
 {
 	int i, j;
@@ -292,6 +303,8 @@ int main(int argc, char *argv[])
 		for( i = 0; i < (MAX_TX_STREAM_LEN-MAX_TX_CHANNEL_BUF_LEN); i++ ) {	// 26 - 22 = 4
 			pstTSB->ucByte[i] = unTmp[i];	
 		}
+
+		Print_TxStream_Channel_Data(unChannelData);
 
 		Encode_TxStream_Channel_Data(pstTSB->stTS.ucChan, unChannelData);	// dest, src
 

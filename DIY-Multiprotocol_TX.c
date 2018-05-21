@@ -11,7 +11,8 @@
 #include "StreamData.h"
 #include "common.h"
 
-unsigned int gunDebugMask = NK_DEBUG_DEBUG;
+//unsigned int gunDebugMask = NK_DEBUG_DEBUG;
+unsigned int gunDebugMask = 0;
 unsigned char gucState = 0x00;
 
 void Encode_TxStream_Channel_Data(uint8_t *pucTxStreamChannel, unsigned int *punChannelData) 
@@ -386,12 +387,13 @@ int main(int argc, char *argv[])
 				}
 
 			} 
+			fsync(fd);
+
 			// 115200 bps : 14400 bytes/sec (69 us/ch)
 			// 100000 bps : 12500 bytes/sec (80 us/ch)
 			// 9XR transmits the data in 100000 bps rate and 26 bytes are transmitted in about 3 ms.
 			// And the delay btw. the 26 bytes stream data is around 11 ms
 			// So, 11 - 3 = 8 ms delay is recommended. but, 5 ms delay is also working well.
-
 			usleep(unXmitDelay);
 
 		} // End of for
@@ -478,6 +480,8 @@ int main(int argc, char *argv[])
 					exit(1);
 				}
 			}
+			fsync(fd);
+
 			// 115200 bps : 14400 bytes/sec (69 us/ch)
 			// 100000 bps : 12500 bytes/sec (80 us/ch)
 			// 9XR transmits the data in 100000 bps rate and 26 bytes are transmitted in about 3 ms.
